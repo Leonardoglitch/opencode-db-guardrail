@@ -156,8 +156,8 @@ export const DbProtection: Plugin = async ({ client }) => {
           body: {
             title:
               rule.severity === "critical"
-                ? "🛑 Comando de base de dados bloqueado"
-                : "⚠️ Comando de risco bloqueado",
+                ? " Comando de base de dados bloqueado"
+                : " Comando de risco bloqueado",
             message: `${rule.label}\n${matchedText}`,
             variant: rule.severity === "critical" ? "error" : "warning",
           },
@@ -167,7 +167,7 @@ export const DbProtection: Plugin = async ({ client }) => {
       }
 
       throw new Error(
-        `🛑 Comando bloqueado pelo db-protection (${rule.severity}): "${rule.label}".\n` +
+        `Comando bloqueado pelo db-protection (${rule.severity}): "${rule.label}".\n` +
           `Segmento detetado: ${matchedText}\n` +
           `Comando original: ${command}\n` +
           `Se isto for mesmo intencional, corre o comando manualmente fora do opencode.`
