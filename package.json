@@ -1,0 +1,38 @@
+{
+  "name": "opencode-db-guardrail",
+  "version": "0.1.0",
+  "description": "opencode plugin that blocks destructive database commands (DROP DATABASE, TRUNCATE TABLE, DELETE/UPDATE without WHERE, etc.) before they run, with shell-wrapper unwrapping, command-chain segmentation, toast alerts and an audit log.",
+  "type": "module",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "database",
+    "security",
+    "guardrails",
+    "drop-database",
+    "sql",
+    "ai-agent"
+  ],
+  "author": "Leonardoglitch",
+  "license": "MIT",
+  "homepage": "https://github.com/Leonardoglitch/opencode-db-guardrail",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Leonardoglitch/opencode-db-guardrail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Leonardoglitch/opencode-db-guardrail/issues"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
