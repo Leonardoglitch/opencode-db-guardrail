@@ -34,5 +34,13 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.30",
+    "@types/node": "^26.5.0",
+    "install": "^0.13.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2",
+    "typescriptnpm": "^1.0.1"
   }
 }
