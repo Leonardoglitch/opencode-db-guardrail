@@ -57,18 +57,6 @@ Para fixar uma versão específica:
 }
 ```
 
-## Verificação
-
-Depois de reiniciares o opencode, testa com um comando que deveria ser
-bloqueado:
-
-```
-psql -c "DROP DATABASE producao"
-```
-
-Deves ver um toast de erro na TUI, uma mensagem de bloqueio na conversa, e uma
-nova linha em `~/.config/opencode/memory/db-guardrail.log`.
-
 ## Configuração
 
 O plugin suporta personalização externa por projeto através do arquivo `guardrail.config.json` na raiz do seu repositório — sem precisar alterar o código-fonte nem fazer fork.
@@ -105,6 +93,13 @@ cp guardrail.config.json.example guardrail.config.json
       }
     ]
   },
+  "allowlist": [
+    {
+      "pattern": "DELETE\\s+FROM\\s+staging_logs",
+      "flags": "i",
+      "reason": "Limpeza trimestral automatizada de logs em ambiente de staging"
+    }
+  ],
   "wrappers": {
     "additionalPatterns": [
       "^\\s*pipenv\\s+run\\s+python\\s+-c\\s+[\"'](.+)[\"']\\s*$"
@@ -117,7 +112,7 @@ cp guardrail.config.json.example guardrail.config.json
 
 - **`rules.disableDefaults`**: Lista de labels ou IDs de regras padrão a desativar (ex: `"rails db:drop"`, `"prisma-migrate-reset"`).
 - **`rules.custom`**: Array de regras adicionais com regex (`pattern`), flags (opcional, padrão `"i"`), `label` e `severity` (`"critical"` ou `"risky"`).
-  > 📖 Para um tutorial aprofundado sobre como escrever expressões regulares robustas, consulte o [Guia de Regras Customizadas](docs/custom-rules.md).
+  > 📖 Para um tutorial completo e detalhado sobre como criar e testar regexes seguras, consulte o [Guia de Regras Customizadas](docs/custom-rules.md).
 - **`allowlist`**: Array de exceções auditáveis que parecem perigosas mas são permitidas no seu contexto. Exige obrigatoriamente um campo `reason`. Quando acionado, o comando é executado e gera um log auditável `[ALLOWLIST]`.
 - **`wrappers.additionalPatterns`**: Regexes adicionais para extrair e reanalisar comandos envelopados.
 - **`log.enabled` e `log.path`**: Ativa/desativa o log de auditoria em arquivo e permite apontar para um caminho customizado.
@@ -139,42 +134,131 @@ Quando um comando perigoso é permitido por constar na allowlist, ele não bloqu
 [2026-09-12T13:00:00.000Z] [ALLOWLIST] Limpeza trimestral de logs em staging :: regra ignorada: DELETE sem WHERE :: comando original: DELETE FROM staging_logs :: segmento: DELETE FROM staging_logs
 ```
 
-## CLI Local (`guardrail-cli`)
+## Como Testar e Validar
 
-O pacote inclui um binário CLI para testar e validar comandos diretamente no terminal ou em pipelines de CI/CD sem precisar inicializar o Opencode.
+Você pode validar o guardrail de várias formas: rodando a suíte automatizada de testes, testando comandos isolados pelo CLI local ou vendo o bloqueio em tempo real na TUI do Opencode.
 
-### Uso no Terminal
+### 1. Testes Automatizados da Suíte (`npm test`)
+
+O projeto possui **52 testes automatizados** cobrindo todas as camadas (ANSI SQL, noSQL, Redis, Oracle, MSSQL, Cassandra, SQLite, segmentação de comandos encadeados, unwrap de wrappers, allowlist com justificativa, CLI e contadores de métricas).
 
 ```bash
-# Testar um comando (exit code 0 se permitido, 1 se bloqueado)
-npx guardrail-cli "psql -c 'DROP DATABASE prod'"
+# Executa compilação TypeScript e roda toda a suíte de testes
+npm test
 
-# Ou via npm run no repositório
-npm run guardrail -- "SELECT * FROM users"
+# Apenas compilar sem rodar testes
+npm run build
 ```
 
-### Listar regras e exceções ativas
+---
+
+### 2. Testes Rápidos pelo Terminal via CLI (`guardrail-cli`)
+
+Para testar qualquer comando diretamente no shell em menos de 100ms sem precisar abrir o Opencode:
+
+```bash
+# Testar comando destrutivo (bloqueado com Exit Code 1)
+npx guardrail-cli "psql -c 'DROP DATABASE prod'"
+npm run guardrail -- "DROP DATABASE prod"
+
+# Testar comando seguro (permitido com Exit Code 0)
+npx guardrail-cli "SELECT * FROM users WHERE active = 1"
+npm run guardrail -- "SELECT * FROM users"
+
+# Testar comandos encadeados com múltiplos operadores (&&, ;, ||, |)
+npx guardrail-cli "echo 'iniciando...' && DROP DATABASE temp && echo 'fim'"
+
+# Testar comandos envelopados em interpretadores e shells
+npx guardrail-cli "bash -c 'redis-cli FLUSHALL'"
+npx guardrail-cli "node -e \"require('pg').query('UPDATE t SET x=1')\""
+```
+
+#### Testando uma Regex Customizada na Hora (`--test-regex`)
+
+Antes de adicionar um novo padrão ao seu `guardrail.config.json`, valide se ele detecta o comando perigoso e se não gera falsos positivos:
+
+```bash
+# Testar se detecta o perigo (deve retornar MATCH com Exit Code 1)
+npx guardrail-cli --test-regex "\\bdrop\\s+table\\b" "DROP TABLE usuarios;"
+
+# Testar se NÃO gera falso positivo em palavras parecidas (deve retornar NO MATCH com Exit Code 0)
+npx guardrail-cli --test-regex "\\bdrop\\s+table\\b" "SELECT * FROM droplet;"
+```
+
+#### Inspecionar Regras Ativas do Projeto (`--list-rules`)
+
+Exibe todas as regras padrão, regras customizadas e entradas de allowlist ativas no diretório atual:
 
 ```bash
 npx guardrail-cli --list-rules
 ```
 
-### Formato JSON para automações e CI/CD
+#### Modo JSON para Scripts e Automações (`--json`)
 
 ```bash
 npx guardrail-cli --json "DROP DATABASE prod"
 ```
 
-### Exemplo de Gate em CI/CD (GitHub Actions)
+Saída de exemplo:
+```json
+{
+  "allowed": false,
+  "status": "blocked",
+  "command": "DROP DATABASE prod",
+  "matchedSegment": "DROP DATABASE prod",
+  "rule": "DROP DATABASE",
+  "severity": "critical"
+}
+```
 
-Varra scripts shell do repositório para barrar comandos destrutivos acidentais:
+---
+
+### 3. Teste Manual dentro do Opencode (TUI e Log de Auditoria)
+
+Após reiniciar o Opencode com o plugin instalado, teste disparando uma instrução de teste na conversa:
+
+```bash
+psql -c "DROP DATABASE producao"
+```
+
+**Resultado esperado:**
+1. **Toast na TUI:** Notificação visual vermelha (`Comando de base de dados bloqueado`) ou amarela para riscos.
+2. **Bloqueio no Chat:** O comando é cancelado antes de ser executado pelo bash do sistema operacional.
+3. **Registro no Log:** É gravada uma linha no arquivo persistente `~/.config/opencode/memory/db-guardrail.log`:
+   ```text
+   [2026-09-12T13:00:00.000Z] [CRITICAL] DROP DATABASE :: comando original: psql -c "DROP DATABASE producao" :: segmento detetado: DROP DATABASE producao
+   ```
+
+---
+
+### 4. Gate de Segurança em CI/CD (GitHub Actions)
+
+Adicione uma etapa preventiva no workflow do seu repositório para inspecionar scripts e migrações antes do merge:
 
 ```yaml
-- name: Scan shell scripts for dangerous DB commands
-  run: |
-    for f in scripts/**/*.sh; do
-      npx guardrail-cli "$(cat $f)" || { echo "Comando proibido em: $f"; exit 1; }
-    done
+# .github/workflows/db-guardrail-check.yml
+name: DB Guardrail Security Check
+
+on: [push, pull_request]
+
+jobs:
+  audit-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Escanear scripts shell em busca de comandos perigosos
+        run: |
+          for f in scripts/**/*.sh; do
+            echo "Auditando $f..."
+            npx guardrail-cli "$(cat $f)" || { echo "❌ Comando perigoso bloqueado em: $f"; exit 1; }
+          done
 ```
 
 ## Métricas Simples (Contadores em Memória)
