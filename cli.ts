@@ -18,6 +18,7 @@ Opções:
   -h, --help            Exibe esta mensagem de ajuda
   -l, --list-rules      Lista todas as regras ativas e exceções de allowlist
   -c, --config <caminho> Especifica o caminho de um arquivo guardrail.config.json
+  -m, --metrics         Exibe resumo das métricas ao finalizar
   --json                Retorna o resultado em formato JSON
 
 Códigos de saída (Exit Codes):
@@ -43,6 +44,7 @@ async function main() {
   let configPath = resolve(process.cwd(), "guardrail.config.json")
   let listRules = false
   let jsonOutput = false
+  let showMetrics = false
   let commandToScan = ""
 
   for (let i = 0; i < args.length; i++) {
@@ -53,6 +55,8 @@ async function main() {
       listRules = true
     } else if (arg === "--json") {
       jsonOutput = true
+    } else if (arg === "-m" || arg === "--metrics") {
+      showMetrics = true
     } else if (arg === "-c" || arg === "--config") {
       const nextArg = args[i + 1]
       if (!nextArg) {
@@ -132,9 +136,20 @@ async function main() {
 
   if (!hit) {
     if (jsonOutput) {
-      console.log(JSON.stringify({ allowed: true, status: "safe", command: commandToScan }))
+      console.log(
+        JSON.stringify({
+          allowed: true,
+          status: "safe",
+          command: commandToScan,
+          ...(showMetrics ? { metrics: { totalScanned: 1, allowed: 1, blockedCritical: 0, blockedRisky: 0, allowlistHits: 0, errors: 0 } } : {}),
+        })
+      )
     } else {
       console.log(`[PERMITIDO] Comando seguro: "${commandToScan}"`)
+      if (showMetrics) {
+        console.log("\n=== MÉTRICAS ===")
+        console.log("  Total escaneado: 1 | Permitidos: 1 | Bloqueados (críticos): 0 | Bloqueados (risco): 0 | Allowlist: 0 | Erros: 0")
+      }
     }
     process.exit(0)
   }
@@ -153,6 +168,7 @@ async function main() {
           rule: rule.label,
           severity: rule.severity,
           reason: allowHit.reason,
+          ...(showMetrics ? { metrics: { totalScanned: 1, allowed: 1, blockedCritical: 0, blockedRisky: 0, allowlistHits: 1, errors: 0 } } : {}),
         })
       )
     } else {
@@ -160,6 +176,10 @@ async function main() {
       console.log(`  Comando: "${commandToScan}"`)
       console.log(`  Regra disparada: ${rule.label} (${rule.severity})`)
       console.log(`  Justificativa: ${allowHit.reason}`)
+      if (showMetrics) {
+        console.log("\n=== MÉTRICAS ===")
+        console.log("  Total escaneado: 1 | Permitidos: 1 | Bloqueados (críticos): 0 | Bloqueados (risco): 0 | Allowlist: 1 | Erros: 0")
+      }
     }
     process.exit(0)
   }
@@ -174,6 +194,18 @@ async function main() {
         matchedSegment: matchedText,
         rule: rule.label,
         severity: rule.severity,
+        ...(showMetrics
+          ? {
+              metrics: {
+                totalScanned: 1,
+                allowed: 0,
+                blockedCritical: rule.severity === "critical" ? 1 : 0,
+                blockedRisky: rule.severity === "risky" ? 1 : 0,
+                allowlistHits: 0,
+                errors: 0,
+              },
+            }
+          : {}),
       })
     )
   } else {
@@ -182,6 +214,12 @@ async function main() {
     console.error(`  Regra violada: "${rule.label}"`)
     console.error(`  Segmento detectado: "${matchedText}"`)
     console.error(`  Comando original: "${commandToScan}"`)
+    if (showMetrics) {
+      console.error("\n=== MÉTRICAS ===")
+      console.error(
+        `  Total escaneado: 1 | Permitidos: 0 | Bloqueados (críticos): ${rule.severity === "critical" ? 1 : 0} | Bloqueados (risco): ${rule.severity === "risky" ? 1 : 0} | Allowlist: 0 | Erros: 0`
+      )
+    }
   }
   process.exit(1)
 }

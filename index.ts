@@ -45,6 +45,37 @@ export interface AllowlistEntry {
   reason: string
 }
 
+export interface GuardrailMetrics {
+  totalScanned: number
+  blockedCritical: number
+  blockedRisky: number
+  allowed: number
+  allowlistHits: number
+  errors: number
+}
+
+export const metrics: GuardrailMetrics = {
+  totalScanned: 0,
+  blockedCritical: 0,
+  blockedRisky: 0,
+  allowed: 0,
+  allowlistHits: 0,
+  errors: 0,
+}
+
+export function getMetrics(): GuardrailMetrics {
+  return { ...metrics }
+}
+
+export function resetMetrics(): void {
+  metrics.totalScanned = 0
+  metrics.blockedCritical = 0
+  metrics.blockedRisky = 0
+  metrics.allowed = 0
+  metrics.allowlistHits = 0
+  metrics.errors = 0
+}
+
 export interface GuardrailConfig {
   log?: {
     enabled?: boolean
@@ -334,66 +365,89 @@ export const DbProtection: Plugin = async ({ client }) => {
       const command: string = output.args?.command ?? ""
       if (!command) return
 
-      const hit = scanCommand(command, options.rules, options.wrappers)
-      if (!hit) return
+      metrics.totalScanned++
 
-      const { rule, matchedText } = hit
-      const timestamp = new Date().toISOString()
+      try {
+        const hit = scanCommand(command, options.rules, options.wrappers)
+        if (!hit) {
+          metrics.allowed++
+          return
+        }
 
-      // Verifica se o comando/segmento bate com alguma exceção auditável da allowlist
-      const allowHit = matchAllowlist(matchedText, command, options.allowlist)
-      if (allowHit) {
-        const allowLogLine =
-          `[${timestamp}] [ALLOWLIST] ${allowHit.reason} :: ` +
-          `regra ignorada: ${rule.label} :: comando original: ${command} :: segmento: ${matchedText}`
+        const { rule, matchedText } = hit
+        const timestamp = new Date().toISOString()
+
+        // Verifica se o comando/segmento bate com alguma exceção auditável da allowlist
+        const allowHit = matchAllowlist(matchedText, command, options.allowlist)
+        if (allowHit) {
+          metrics.allowed++
+          metrics.allowlistHits++
+
+          const allowLogLine =
+            `[${timestamp}] [ALLOWLIST] ${allowHit.reason} :: ` +
+            `regra ignorada: ${rule.label} :: comando original: ${command} :: segmento: ${matchedText}`
+
+          if (options.logEnabled) {
+            await appendAuditLog(options.auditLogPath, allowLogLine)
+          }
+
+          await client.app.log({
+            body: { service: "db-protection", level: "info", message: allowLogLine },
+          })
+
+          // Permitido pela allowlist auditada — não lança erro nem bloqueia.
+          return
+        }
+
+        if (rule.severity === "critical") {
+          metrics.blockedCritical++
+        } else {
+          metrics.blockedRisky++
+        }
+
+        const logLine =
+          `[${timestamp}] [${rule.severity.toUpperCase()}] ${rule.label} :: ` +
+          `comando original: ${command} :: segmento detetado: ${matchedText}`
 
         if (options.logEnabled) {
-          await appendAuditLog(options.auditLogPath, allowLogLine)
+          await appendAuditLog(options.auditLogPath, logLine)
         }
 
         await client.app.log({
-          body: { service: "db-protection", level: "info", message: allowLogLine },
+          body: { service: "db-protection", level: "warn", message: logLine },
         })
 
-        // Permitido pela allowlist auditada — não lança erro nem bloqueia.
-        return
-      }
-
-      const logLine =
-        `[${timestamp}] [${rule.severity.toUpperCase()}] ${rule.label} :: ` +
-        `comando original: ${command} :: segmento detetado: ${matchedText}`
-
-      if (options.logEnabled) {
-        await appendAuditLog(options.auditLogPath, logLine)
-      }
-
-      await client.app.log({
-        body: { service: "db-protection", level: "warn", message: logLine },
-      })
-
-      if (options.toastEnabled) {
-        try {
-          await client.tui.showToast({
-            body: {
-              title:
-                rule.severity === "critical"
-                  ? " Comando de base de dados bloqueado"
-                  : " Comando de risco bloqueado",
-              message: `${rule.label}\n${matchedText}`,
-              variant: rule.severity === "critical" ? "error" : "warning",
-            },
-          })
-        } catch {
-          // Sem TUI ligada (ex: modo headless) — segue só com o log e o erro abaixo.
+        if (options.toastEnabled) {
+          try {
+            await client.tui.showToast({
+              body: {
+                title:
+                  rule.severity === "critical"
+                    ? " Comando de base de dados bloqueado"
+                    : " Comando de risco bloqueado",
+                message: `${rule.label}\n${matchedText}`,
+                variant: rule.severity === "critical" ? "error" : "warning",
+              },
+            })
+          } catch {
+            // Sem TUI ligada (ex: modo headless) — segue só com o log e o erro abaixo.
+          }
         }
-      }
 
-      throw new Error(
-        `Comando bloqueado pelo db-protection (${rule.severity}): "${rule.label}".\n` +
-          `Segmento detetado: ${matchedText}\n` +
-          `Comando original: ${command}\n` +
-          `Se isto for mesmo intencional, corre o comando manualmente fora do opencode.`
-      )
+        throw new Error(
+          `Comando bloqueado pelo db-protection (${rule.severity}): "${rule.label}".\n` +
+            `Segmento detetado: ${matchedText}\n` +
+            `Comando original: ${command}\n` +
+            `Se isto for mesmo intencional, corre o comando manualmente fora do opencode.`
+        )
+      } catch (err) {
+        // Se o erro foi o lançamento intencional do bloqueio, propaga normalmente
+        if (err instanceof Error && err.message.startsWith("Comando bloqueado pelo db-protection")) {
+          throw err
+        }
+        metrics.errors++
+        throw err
+      }
     },
   }
 }

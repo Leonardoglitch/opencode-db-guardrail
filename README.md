@@ -176,6 +176,39 @@ Varra scripts shell do repositório para barrar comandos destrutivos acidentais:
     done
 ```
 
+## Métricas Simples (Contadores em Memória)
+
+O plugin expõe um módulo de contadores em memória com overhead zero e sem necessidade de infraestrutura adicional (Prometheus, Datadog ou agentes).
+
+### Estrutura das métricas
+
+```ts
+interface GuardrailMetrics {
+  totalScanned: number    // Total de comandos bash analisados
+  blockedCritical: number // Total de operações críticas bloqueadas
+  blockedRisky: number    // Total de operações de risco bloqueadas
+  allowed: number         // Total de comandos permitidos (seguros ou via allowlist)
+  allowlistHits: number   // Total de comandos liberados pela allowlist auditada
+  errors: number          // Total de falhas de processamento
+}
+```
+
+### Acesso Programático
+
+```ts
+import { getMetrics, resetMetrics, metrics } from "opencode-db-guardrail"
+
+console.log(getMetrics())
+// Exemplo de saída:
+// { totalScanned: 247, blockedCritical: 3, blockedRisky: 7, allowed: 237, allowlistHits: 1, errors: 0 }
+```
+
+### Visualização via CLI
+
+```bash
+npx guardrail-cli --metrics "SELECT 1"
+```
+
 ## Limitações — lê isto antes de confiar no plugin
 
 - **Sub-agentes contornam o plugin.** Hooks do opencode (`tool.execute.before`)

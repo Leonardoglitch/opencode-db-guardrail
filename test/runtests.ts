@@ -1,4 +1,12 @@
-import { DbProtection, buildResolvedOptions, scanCommand, loadConfigFile } from "../index.js";
+import {
+  DbProtection,
+  buildResolvedOptions,
+  scanCommand,
+  loadConfigFile,
+  getMetrics,
+  resetMetrics,
+  metrics,
+} from "../index.js";
 import { writeFile, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { execFile } from "node:child_process";
@@ -439,6 +447,75 @@ async function runTests() {
       console.log(` FALHA: [${desc}] não foi bloqueado conforme esperado. Hit: ${hit?.rule.label}`);
       failed++;
     }
+  }
+
+  // Teste 6: Métricas Simples (contadores em memória)
+  console.log("\n=== TESTANDO MÉTRICAS SIMPLES (CONTADORES EM MEMÓRIA) ===");
+
+  // 6.1: resetMetrics() deve zerar contadores
+  resetMetrics();
+  const initialMetrics = getMetrics();
+  if (
+    initialMetrics.totalScanned === 0 &&
+    initialMetrics.blockedCritical === 0 &&
+    initialMetrics.blockedRisky === 0 &&
+    initialMetrics.allowed === 0 &&
+    initialMetrics.allowlistHits === 0 &&
+    initialMetrics.errors === 0
+  ) {
+    console.log(" OK: resetMetrics() zerou com sucesso todos os contadores.");
+    passed++;
+  } else {
+    console.log(" FALHA: resetMetrics() não zerou contadores:", initialMetrics);
+    failed++;
+  }
+
+  // 6.2: Processamento pelo hook deve incrementar contadores
+  const metricsPluginFactory = await DbProtection({ client: mockClient } as unknown as Parameters<typeof DbProtection>[0]);
+  const metricsPlugin = metricsPluginFactory as unknown as {
+    "tool.execute.before": (input: any, output: any) => Promise<void>;
+  };
+
+  // Comando permitido
+  await metricsPlugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "SELECT * FROM produtos;" } });
+
+  // Comando crítico bloqueado
+  try {
+    await metricsPlugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "DROP DATABASE teste;" } });
+  } catch {}
+
+  // Comando arriscado bloqueado
+  try {
+    await metricsPlugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "DELETE FROM tabela_sem_where;" } });
+  } catch {}
+
+  const snapMetrics = getMetrics();
+  if (
+    snapMetrics.totalScanned === 3 &&
+    snapMetrics.allowed === 1 &&
+    snapMetrics.blockedCritical === 1 &&
+    snapMetrics.blockedRisky === 1
+  ) {
+    console.log(" OK: Contadores (totalScanned, allowed, blockedCritical, blockedRisky) incrementados corretamente.");
+    passed++;
+  } else {
+    console.log(" FALHA: Valores inesperados nas métricas:", snapMetrics);
+    failed++;
+  }
+
+  // 6.3: CLI com flag --metrics
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [cliPath, "--metrics", "SELECT 1;"]);
+    if (stdout.includes("=== MÉTRICAS ===") && stdout.includes("Total escaneado: 1")) {
+      console.log(" OK: CLI com --metrics exibiu resumo de métricas com sucesso.");
+      passed++;
+    } else {
+      console.log(" FALHA: CLI não exibiu seção de métricas:", stdout);
+      failed++;
+    }
+  } catch (err) {
+    console.log(" FALHA: Erro ao rodar CLI com --metrics:", err);
+    failed++;
   }
 
   console.log("\n=== RESUMO FINAL ===");
