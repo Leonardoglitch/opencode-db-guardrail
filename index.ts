@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { appendFile, mkdir, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { isAbsolute, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 
 /**
  * opencode-db-guardrail
@@ -11,7 +11,8 @@ import { isAbsolute, join, resolve } from "node:path"
  * do opencode-codex-guardrails (github.com/Yulimfish/opencode-codex-guardrails):
  * segmentação de comandos encadeados, expansão de shell-wrappers /
  * interpretadores one-liner, e um log de auditoria persistente —
- * com suporte a configuração externa personalizável por projeto (guardrail.config.json).
+ * com suporte a configuração externa personalizável por projeto (guardrail.config.json)
+ * e exceções auditáveis (allowlist) com justificativa obrigatória.
  */
 
 export type Severity = "critical" | "risky"
@@ -31,6 +32,19 @@ export interface CustomRuleConfig {
   severity?: Severity
 }
 
+export interface AllowlistEntryConfig {
+  id?: string
+  pattern: string
+  flags?: string
+  reason: string // Justificativa obrigatória para auditoria e compliance
+}
+
+export interface AllowlistEntry {
+  id?: string | undefined
+  pattern: RegExp
+  reason: string
+}
+
 export interface GuardrailConfig {
   log?: {
     enabled?: boolean
@@ -43,6 +57,7 @@ export interface GuardrailConfig {
     disableDefaults?: string[]
     custom?: CustomRuleConfig[]
   }
+  allowlist?: AllowlistEntryConfig[]
   wrappers?: {
     additionalPatterns?: string[]
   }
@@ -91,6 +106,7 @@ function resolveHomePath(filepath: string): string {
 
 export interface ResolvedGuardrailOptions {
   rules: Rule[]
+  allowlist: AllowlistEntry[]
   wrappers: RegExp[]
   auditLogPath: string
   logEnabled: boolean
@@ -144,6 +160,27 @@ export function buildResolvedOptions(config?: GuardrailConfig | null): ResolvedG
     }
   }
 
+  // Monta lista de allowlist auditável (exige reason não vazio)
+  const allowlist: AllowlistEntry[] = []
+  if (config?.allowlist && Array.isArray(config.allowlist)) {
+    for (const item of config.allowlist) {
+      if (!item.pattern || !item.reason || !item.reason.trim()) {
+        // Entradas sem reason ou sem pattern são ignoradas por compliance
+        continue
+      }
+      try {
+        const regex = new RegExp(item.pattern, item.flags ?? "i")
+        allowlist.push({
+          id: item.id,
+          pattern: regex,
+          reason: item.reason.trim(),
+        })
+      } catch {
+        // Ignora allowlist com regex malformatado
+      }
+    }
+  }
+
   // Monta lista de wrappers
   const wrappers: RegExp[] = [...DEFAULT_SHELL_WRAPPERS, ...DEFAULT_INTERPRETER_ONE_LINERS]
   if (config?.wrappers?.additionalPatterns && Array.isArray(config.wrappers.additionalPatterns)) {
@@ -161,6 +198,7 @@ export function buildResolvedOptions(config?: GuardrailConfig | null): ResolvedG
 
   return {
     rules: activeRules,
+    allowlist,
     wrappers,
     auditLogPath,
     logEnabled: config?.log?.enabled ?? true,
@@ -191,6 +229,18 @@ export function unwrapPayload(segment: string, wrappers: RegExp[]): string[] {
 export function matchRule(segment: string, rules: Rule[]): Rule | null {
   for (const rule of rules) {
     if (rule.pattern.test(segment)) return rule
+  }
+  return null
+}
+
+/**
+ * Verifica se um segmento ou comando completo corresponde a alguma exceção auditável da allowlist.
+ */
+export function matchAllowlist(segment: string, command: string, allowlist: AllowlistEntry[]): AllowlistEntry | null {
+  for (const entry of allowlist) {
+    if (entry.pattern.test(segment) || entry.pattern.test(command)) {
+      return entry
+    }
   }
   return null
 }
@@ -264,6 +314,26 @@ export const DbProtection: Plugin = async ({ client }) => {
 
       const { rule, matchedText } = hit
       const timestamp = new Date().toISOString()
+
+      // Verifica se o comando/segmento bate com alguma exceção auditável da allowlist
+      const allowHit = matchAllowlist(matchedText, command, options.allowlist)
+      if (allowHit) {
+        const allowLogLine =
+          `[${timestamp}] [ALLOWLIST] ${allowHit.reason} :: ` +
+          `regra ignorada: ${rule.label} :: comando original: ${command} :: segmento: ${matchedText}`
+
+        if (options.logEnabled) {
+          await appendAuditLog(options.auditLogPath, allowLogLine)
+        }
+
+        await client.app.log({
+          body: { service: "db-protection", level: "info", message: allowLogLine },
+        })
+
+        // Permitido pela allowlist auditada — não lança erro nem bloqueia.
+        return
+      }
+
       const logLine =
         `[${timestamp}] [${rule.severity.toUpperCase()}] ${rule.label} :: ` +
         `comando original: ${command} :: segmento detetado: ${matchedText}`

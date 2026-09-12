@@ -102,9 +102,26 @@ cp guardrail.config.json.example guardrail.config.json
 
 - **`rules.disableDefaults`**: Lista de labels ou IDs de regras padrão a desativar (ex: `"rails db:drop"`, `"prisma-migrate-reset"`).
 - **`rules.custom`**: Array de regras adicionais com regex (`pattern`), flags (opcional, padrão `"i"`), `label` e `severity` (`"critical"` ou `"risky"`).
+- **`allowlist`**: Array de exceções auditáveis que parecem perigosas mas são permitidas no seu contexto. Exige obrigatoriamente um campo `reason`. Quando acionado, o comando é executado e gera um log auditável `[ALLOWLIST]`.
 - **`wrappers.additionalPatterns`**: Regexes adicionais para extrair e reanalisar comandos envelopados.
 - **`log.enabled` e `log.path`**: Ativa/desativa o log de auditoria em arquivo e permite apontar para um caminho customizado.
 - **`toast.enabled`**: Ativa ou desativa alertas toast na TUI.
+
+## Allowlist (Exceções Auditáveis)
+
+Para evitar "alert fatigue" com rotinas legítimas (ex.: limpeza de tabelas temporárias ou resets em CI), use a seção `allowlist`.
+
+Toda entrada na allowlist exige:
+1. `pattern`: Expressão regular correspondente ao comando/segmento permitido.
+2. `reason`: **Obrigatório**. Justificativa clara para compliance e auditoria.
+
+### Log de Auditoria para Allowlist
+
+Quando um comando perigoso é permitido por constar na allowlist, ele não bloqueia a execução, mas gera um registro específico no log:
+
+```text
+[2026-09-12T13:00:00.000Z] [ALLOWLIST] Limpeza trimestral de logs em staging :: regra ignorada: DELETE sem WHERE :: comando original: DELETE FROM staging_logs :: segmento: DELETE FROM staging_logs
+```
 
 ## Limitações — lê isto antes de confiar no plugin
 

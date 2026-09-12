@@ -22,6 +22,18 @@
       }
     ]
   },
+  "allowlist": [
+    {
+      "pattern": "DELETE\\s+FROM\\s+staging_logs",
+      "flags": "i",
+      "reason": "Limpeza trimestral automatizada de logs em ambiente de staging"
+    },
+    {
+      "pattern": "TRUNCATE\\s+TABLE\\s+temp_cache",
+      "flags": "i",
+      "reason": "Reset de cache efêmero durante rotina de CI"
+    }
+  ],
   "wrappers": {
     "additionalPatterns": [
       "^\\s*pipenv\\s+run\\s+python\\s+-c\\s+[\"'](.+)[\"']\\s*$"

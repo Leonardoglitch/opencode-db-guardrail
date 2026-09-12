@@ -207,6 +207,126 @@ async function runTests() {
     } catch {}
   }
 
+  // Teste 3: Whitelist / Allowlist (exceções auditáveis)
+  console.log("\n=== TESTANDO WHITELIST / ALLOWLIST (EXCEÇÕES AUDITÁVEIS) ===");
+
+  const allowlistConfig = {
+    allowlist: [
+      {
+        pattern: "DELETE\\s+FROM\\s+staging_logs",
+        reason: "Limpeza trimestral automatizada de staging"
+      },
+      {
+        pattern: "TRUNCATE\\s+TABLE\\s+temp_cache",
+        reason: "Reset de cache efêmero durante rotina de CI"
+      },
+      {
+        pattern: "DROP\\s+DATABASE\\s+teste_invalido",
+        reason: "   " // Justificativa em branco -> DEVE ser ignorado por compliance
+      }
+    ]
+  };
+
+  const resolvedAllow = buildResolvedOptions(allowlistConfig);
+
+  // 3.1: Exceção válida na allowlist deve permitir execução de DELETE sem WHERE para staging_logs
+  const stagingHit = scanCommand("DELETE FROM staging_logs;", resolvedAllow.rules, resolvedAllow.wrappers);
+  if (stagingHit) {
+    const { matchAllowlist } = await import("../index.js");
+    const allowed = matchAllowlist(stagingHit.matchedText, "DELETE FROM staging_logs;", resolvedAllow.allowlist);
+    if (allowed && allowed.reason === "Limpeza trimestral automatizada de staging") {
+      console.log(" OK: Allowlist identificou exceção com justificativa válida para staging_logs.");
+      passed++;
+    } else {
+      console.log(" FALHA: Allowlist não identificou exceção válida.");
+      failed++;
+    }
+  } else {
+    console.log(" FALHA: Comando não foi detectado pelas regras padrão.");
+    failed++;
+  }
+
+  // 3.2: DELETE em outra tabela (sem allowlist) continua sendo bloqueado
+  const prodHit = scanCommand("DELETE FROM prod_users;", resolvedAllow.rules, resolvedAllow.wrappers);
+  if (prodHit) {
+    const { matchAllowlist } = await import("../index.js");
+    const allowed = matchAllowlist(prodHit.matchedText, "DELETE FROM prod_users;", resolvedAllow.allowlist);
+    if (!allowed) {
+      console.log(" OK: DELETE em tabela fora da allowlist continua sem bypass.");
+      passed++;
+    } else {
+      console.log(" FALHA: Tabela não permitida recebeu bypass indevido.");
+      failed++;
+    }
+  }
+
+  // 3.3: Entrada com reason em branco deve ter sido descartada (não dá bypass)
+  if (resolvedAllow.allowlist.length === 2) {
+    console.log(" OK: Entrada de allowlist sem justificativa (reason vazio) foi descartada com sucesso.");
+    passed++;
+  } else {
+    console.log(" FALHA: Entrada sem justificativa foi aceita indevidamente.");
+    failed++;
+  }
+
+  // 3.4: Teste de integração ponta a ponta com o hook do plugin
+  try {
+    await writeFile(
+      tempConfigPath,
+      JSON.stringify({
+        allowlist: [
+          {
+            pattern: "DELETE\\s+FROM\\s+staging_logs",
+            reason: "Limpeza de staging permitida"
+          }
+        ]
+      }),
+      "utf8"
+    );
+
+    let loggedAllowlist = false;
+    const clientWithLogger = {
+      app: {
+        log: (args: any) => {
+          if (args?.body?.message?.includes("[ALLOWLIST]")) {
+            loggedAllowlist = true;
+          }
+        }
+      },
+      tui: mockClient.tui
+    };
+
+    const allowPluginFactory = await DbProtection({
+      client: clientWithLogger,
+    } as unknown as Parameters<typeof DbProtection>[0]);
+    const allowPlugin = allowPluginFactory as unknown as {
+      "tool.execute.before": (input: any, output: any) => Promise<void>;
+    };
+
+    // Comando na allowlist NÃO deve lançar erro
+    let allowedErrored = false;
+    try {
+      await allowPlugin["tool.execute.before"](
+        { tool: "bash" },
+        { args: { command: "DELETE FROM staging_logs;" } }
+      );
+    } catch {
+      allowedErrored = true;
+    }
+
+    if (!allowedErrored && loggedAllowlist) {
+      console.log(" OK: Hook permitiu comando da allowlist e gerou log [ALLOWLIST] de auditoria.");
+      passed++;
+    } else {
+      console.log(` FALHA: Hook falhou na allowlist (erro: ${allowedErrored}, log: ${loggedAllowlist}).`);
+      failed++;
+    }
+  } finally {
+    try {
+      await unlink(tempConfigPath);
+    } catch {}
+  }
+
   console.log("\n=== RESUMO FINAL ===");
   console.log(` Passou: ${passed} |  Falhou: ${failed}`);
   
