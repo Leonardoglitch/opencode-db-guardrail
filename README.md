@@ -117,6 +117,7 @@ cp guardrail.config.json.example guardrail.config.json
 
 - **`rules.disableDefaults`**: Lista de labels ou IDs de regras padrão a desativar (ex: `"rails db:drop"`, `"prisma-migrate-reset"`).
 - **`rules.custom`**: Array de regras adicionais com regex (`pattern`), flags (opcional, padrão `"i"`), `label` e `severity` (`"critical"` ou `"risky"`).
+  > 📖 Para um tutorial aprofundado sobre como escrever expressões regulares robustas, consulte o [Guia de Regras Customizadas](docs/custom-rules.md).
 - **`allowlist`**: Array de exceções auditáveis que parecem perigosas mas são permitidas no seu contexto. Exige obrigatoriamente um campo `reason`. Quando acionado, o comando é executado e gera um log auditável `[ALLOWLIST]`.
 - **`wrappers.additionalPatterns`**: Regexes adicionais para extrair e reanalisar comandos envelopados.
 - **`log.enabled` e `log.path`**: Ativa/desativa o log de auditoria em arquivo e permite apontar para um caminho customizado.

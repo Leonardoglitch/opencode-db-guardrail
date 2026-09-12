@@ -518,6 +518,39 @@ async function runTests() {
     failed++;
   }
 
+  // Teste 7: Testando regex diretamente via CLI (--test-regex)
+  console.log("\n=== TESTANDO VALIDAÇÃO DE REGEX DIRETA (--test-regex) ===");
+
+  // 7.1: Match positivo (deve sair com exit code 1)
+  try {
+    await execFileAsync(process.execPath, [cliPath, "--test-regex", "\\bdrop\\s+table\\b", "DROP TABLE usuarios;"]);
+    console.log(" FALHA: --test-regex deveria ter retornado exit code 1 em match positivo.");
+    failed++;
+  } catch (err: any) {
+    if (err.code === 1 && (err.stdout || err.stderr).includes("[MATCH]")) {
+      console.log(" OK: --test-regex detectou match com sucesso e retornou exit code 1.");
+      passed++;
+    } else {
+      console.log(" FALHA: --test-regex não retornou saída esperada para match:", err);
+      failed++;
+    }
+  }
+
+  // 7.2: Sem match (deve sair com exit code 0)
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [cliPath, "--test-regex", "\\bdrop\\s+table\\b", "SELECT * FROM droplet;"]);
+    if (stdout.includes("[NO MATCH]")) {
+      console.log(" OK: --test-regex não disparou em falso positivo ('droplet') e retornou 0.");
+      passed++;
+    } else {
+      console.log(" FALHA: Saída inesperada para no match:", stdout);
+      failed++;
+    }
+  } catch (err) {
+    console.log(" FALHA: --test-regex falhou em comando sem match:", err);
+    failed++;
+  }
+
   console.log("\n=== RESUMO FINAL ===");
   console.log(` Passou: ${passed} |  Falhou: ${failed}`);
   

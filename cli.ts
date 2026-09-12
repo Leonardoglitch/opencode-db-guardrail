@@ -19,6 +19,7 @@ Opções:
   -l, --list-rules      Lista todas as regras ativas e exceções de allowlist
   -c, --config <caminho> Especifica o caminho de um arquivo guardrail.config.json
   -m, --metrics         Exibe resumo das métricas ao finalizar
+  -t, --test-regex <regex> "<cmd>"  Testa uma expressão regular diretamente contra um comando
   --json                Retorna o resultado em formato JSON
 
 Códigos de saída (Exit Codes):
@@ -28,7 +29,7 @@ Códigos de saída (Exit Codes):
 
 Exemplos:
   npx guardrail-cli "psql -c 'DROP DATABASE prod'"
-  npx guardrail-cli "SELECT * FROM users"
+  npx guardrail-cli --test-regex "\\bdrop\\s+table\\b" "DROP TABLE users;"
   npx guardrail-cli --list-rules
 `)
 }
@@ -45,6 +46,7 @@ async function main() {
   let listRules = false
   let jsonOutput = false
   let showMetrics = false
+  let testRegexPattern: string | null = null
   let commandToScan = ""
 
   for (let i = 0; i < args.length; i++) {
@@ -57,6 +59,14 @@ async function main() {
       jsonOutput = true
     } else if (arg === "-m" || arg === "--metrics") {
       showMetrics = true
+    } else if (arg === "-t" || arg === "--test-regex") {
+      const nextPattern = args[i + 1]
+      if (!nextPattern) {
+        console.error("Erro: Regex não fornecido para --test-regex.")
+        process.exit(2)
+      }
+      testRegexPattern = nextPattern
+      i++
     } else if (arg === "-c" || arg === "--config") {
       const nextArg = args[i + 1]
       if (!nextArg) {
@@ -67,6 +77,47 @@ async function main() {
       i++
     } else if (!arg.startsWith("-") && !commandToScan) {
       commandToScan = arg
+    }
+  }
+
+  // Modo de teste de regex direto
+  if (testRegexPattern !== null) {
+    if (!commandToScan) {
+      console.error("Erro: Nenhum comando informado para testar contra a regex.")
+      console.error("Uso: guardrail-cli --test-regex \"<regex>\" \"<comando>\"")
+      process.exit(2)
+    }
+
+    try {
+      // Se o usuário passou barras duplicadas literais (ex: \\b), normaliza para conveniência
+      const normalizedPattern = testRegexPattern.replace(/\\\\/g, "\\")
+      const regex = new RegExp(normalizedPattern, "i")
+      const testRule = { id: "test-regex", pattern: regex, label: "TEST_REGEX", severity: "critical" as const }
+      const hit = scanCommand(commandToScan, [testRule], [
+        /^\s*(?:sudo\s+)?(?:bash|sh|zsh)\s+-c\s+["'](.+)["']\s*$/is,
+        /^\s*python[23]?\s+-c\s+["'](.+)["']\s*$/is,
+        /^\s*node\s+-e\s+["'](.+)["']\s*$/is,
+      ])
+
+      if (hit) {
+        if (jsonOutput) {
+          console.log(JSON.stringify({ match: true, pattern: testRegexPattern, matchedText: hit.matchedText, command: commandToScan }))
+        } else {
+          console.log(`[MATCH] O comando bateu com o regex "${testRegexPattern}"!`)
+          console.log(`  Segmento detectado: "${hit.matchedText}"`)
+        }
+        process.exit(1) // Exit code 1 para indicar detecção de risco
+      } else {
+        if (jsonOutput) {
+          console.log(JSON.stringify({ match: false, pattern: testRegexPattern, command: commandToScan }))
+        } else {
+          console.log(`[NO MATCH] O comando NÃO bateu com o regex "${testRegexPattern}".`)
+        }
+        process.exit(0)
+      }
+    } catch (err: any) {
+      console.error(`Erro ao compilar regex "${testRegexPattern}": ${err.message}`)
+      process.exit(2)
     }
   }
 

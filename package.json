@@ -16,6 +16,7 @@
     "index.ts",
     "cli.ts",
     "dist",
+    "docs",
     "guardrail.config.json.example",
     "README.md",
     "LICENSE"
