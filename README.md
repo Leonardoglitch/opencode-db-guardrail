@@ -123,6 +123,44 @@ Quando um comando perigoso é permitido por constar na allowlist, ele não bloqu
 [2026-09-12T13:00:00.000Z] [ALLOWLIST] Limpeza trimestral de logs em staging :: regra ignorada: DELETE sem WHERE :: comando original: DELETE FROM staging_logs :: segmento: DELETE FROM staging_logs
 ```
 
+## CLI Local (`guardrail-cli`)
+
+O pacote inclui um binário CLI para testar e validar comandos diretamente no terminal ou em pipelines de CI/CD sem precisar inicializar o Opencode.
+
+### Uso no Terminal
+
+```bash
+# Testar um comando (exit code 0 se permitido, 1 se bloqueado)
+npx guardrail-cli "psql -c 'DROP DATABASE prod'"
+
+# Ou via npm run no repositório
+npm run guardrail -- "SELECT * FROM users"
+```
+
+### Listar regras e exceções ativas
+
+```bash
+npx guardrail-cli --list-rules
+```
+
+### Formato JSON para automações e CI/CD
+
+```bash
+npx guardrail-cli --json "DROP DATABASE prod"
+```
+
+### Exemplo de Gate em CI/CD (GitHub Actions)
+
+Varra scripts shell do repositório para barrar comandos destrutivos acidentais:
+
+```yaml
+- name: Scan shell scripts for dangerous DB commands
+  run: |
+    for f in scripts/**/*.sh; do
+      npx guardrail-cli "$(cat $f)" || { echo "Comando proibido em: $f"; exit 1; }
+    done
+```
+
 ## Limitações — lê isto antes de confiar no plugin
 
 - **Sub-agentes contornam o plugin.** Hooks do opencode (`tool.execute.before`)

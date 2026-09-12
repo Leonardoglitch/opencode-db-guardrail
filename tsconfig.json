@@ -40,5 +40,5 @@
     "esModuleInterop": true,
     "moduleResolution": "nodenext"
   },
-  "include": ["index.ts", "test/**/*.ts"]
+  "include": ["index.ts", "cli.ts", "test/**/*.ts"]
 }

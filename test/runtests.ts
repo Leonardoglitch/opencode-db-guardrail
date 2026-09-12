@@ -1,6 +1,10 @@
 import { DbProtection, buildResolvedOptions, scanCommand, loadConfigFile } from "../index.js";
 import { writeFile, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 // Mock do client do Opencode (apenas as partes usadas pelo plugin)
 const mockClient = {
@@ -325,6 +329,81 @@ async function runTests() {
     try {
       await unlink(tempConfigPath);
     } catch {}
+  }
+
+  // Teste 4: CLI Local (guardrail-cli)
+  console.log("\n=== TESTANDO CLI LOCAL (guardrail-cli) ===");
+  const cliPath = resolve(process.cwd(), "dist", "cli.js");
+
+  // 4.1: Comando seguro deve retornar exit code 0
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [cliPath, "SELECT * FROM users;"]);
+    if (stdout.includes("[PERMITIDO]")) {
+      console.log(" OK: CLI retornou 0 para comando seguro ('SELECT').");
+      passed++;
+    } else {
+      console.log(" FALHA: CLI não exibiu mensagem esperada de permitido.");
+      failed++;
+    }
+  } catch (err) {
+    console.log(" FALHA: CLI retornou erro em comando seguro:", err);
+    failed++;
+  }
+
+  // 4.2: Comando perigoso deve retornar exit code 1
+  try {
+    await execFileAsync(process.execPath, [cliPath, "DROP DATABASE producao;"]);
+    console.log(" FALHA: CLI permitiu comando 'DROP DATABASE' (esperava exit code 1).");
+    failed++;
+  } catch (err: any) {
+    if (err.code === 1 && (err.stderr || err.stdout).includes("[BLOQUEADO]")) {
+      console.log(" OK: CLI bloqueou 'DROP DATABASE' e retornou exit code 1.");
+      passed++;
+    } else {
+      console.log(" FALHA: CLI não retornou exit code 1 com mensagem de bloqueio:", err);
+      failed++;
+    }
+  }
+
+  // 4.3: Comando com flag --json
+  try {
+    await execFileAsync(process.execPath, [cliPath, "--json", "DROP DATABASE teste;"]);
+    console.log(" FALHA: CLI com --json não retornou exit code 1.");
+    failed++;
+  } catch (err: any) {
+    if (err.code === 1) {
+      try {
+        const parsed = JSON.parse(err.stdout);
+        if (parsed.allowed === false && parsed.status === "blocked") {
+          console.log(" OK: CLI com --json retornou payload estruturado de bloqueio.");
+          passed++;
+        } else {
+          console.log(" FALHA: Payload JSON inválido da CLI.");
+          failed++;
+        }
+      } catch {
+        console.log(" FALHA: Resposta do CLI não pôde ser parseada como JSON:", err.stdout);
+        failed++;
+      }
+    } else {
+      console.log(" FALHA: Código de saída inesperado para --json:", err.code);
+      failed++;
+    }
+  }
+
+  // 4.4: Listar regras (--list-rules) deve retornar 0
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [cliPath, "--list-rules"]);
+    if (stdout.includes("DROP DATABASE") && stdout.includes("CRITICAL")) {
+      console.log(" OK: CLI exibiu listagem de regras ativas (--list-rules) com sucesso.");
+      passed++;
+    } else {
+      console.log(" FALHA: CLI não listou regras esperadas.");
+      failed++;
+    }
+  } catch (err) {
+    console.log(" FALHA: CLI falhou ao executar --list-rules:", err);
+    failed++;
   }
 
   console.log("\n=== RESUMO FINAL ===");
