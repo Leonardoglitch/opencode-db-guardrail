@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "OpencodeDbGuardrailConfig",
+  "description": "Configuração externa para o plugin opencode-db-guardrail",
+  "log": {
+    "enabled": true,
+    "path": "~/.config/opencode/memory/db-guardrail.log"
+  },
+  "toast": {
+    "enabled": true
+  },
+  "rules": {
+    "disableDefaults": [
+      "rails db:drop"
+    ],
+    "custom": [
+      {
+        "pattern": "\\bdrop\\s+table\\b",
+        "flags": "i",
+        "label": "DROP TABLE",
+        "severity": "critical"
+      }
+    ]
+  },
+  "wrappers": {
+    "additionalPatterns": [
+      "^\\s*pipenv\\s+run\\s+python\\s+-c\\s+[\"'](.+)[\"']\\s*$"
+    ]
+  }
+}

@@ -56,10 +56,55 @@ nova linha em `~/.config/opencode/memory/db-guardrail.log`.
 
 ## Configuração
 
-Não há ficheiro de configuração para já — as regras estão no array `RULES` em
-`index.ts`. Para adicionar ou ajustar padrões (ex.: comandos específicos do
-teu motor de base de dados), faz fork do pacote; é um único ficheiro com menos
-de 200 linhas.
+O plugin suporta personalização externa por projeto através do arquivo `guardrail.config.json` na raiz do seu repositório — sem precisar alterar o código-fonte nem fazer fork.
+
+### Onboarding rápido
+
+Copie o template de exemplo para o seu projeto:
+
+```bash
+cp guardrail.config.json.example guardrail.config.json
+```
+
+### Exemplo de `guardrail.config.json`
+
+```json
+{
+  "log": {
+    "enabled": true,
+    "path": "~/.config/opencode/memory/db-guardrail.log"
+  },
+  "toast": {
+    "enabled": true
+  },
+  "rules": {
+    "disableDefaults": [
+      "rails db:drop"
+    ],
+    "custom": [
+      {
+        "pattern": "\\bdrop\\s+table\\b",
+        "flags": "i",
+        "label": "DROP TABLE",
+        "severity": "critical"
+      }
+    ]
+  },
+  "wrappers": {
+    "additionalPatterns": [
+      "^\\s*pipenv\\s+run\\s+python\\s+-c\\s+[\"'](.+)[\"']\\s*$"
+    ]
+  }
+}
+```
+
+### Opções disponíveis
+
+- **`rules.disableDefaults`**: Lista de labels ou IDs de regras padrão a desativar (ex: `"rails db:drop"`, `"prisma-migrate-reset"`).
+- **`rules.custom`**: Array de regras adicionais com regex (`pattern`), flags (opcional, padrão `"i"`), `label` e `severity` (`"critical"` ou `"risky"`).
+- **`wrappers.additionalPatterns`**: Regexes adicionais para extrair e reanalisar comandos envelopados.
+- **`log.enabled` e `log.path`**: Ativa/desativa o log de auditoria em arquivo e permite apontar para um caminho customizado.
+- **`toast.enabled`**: Ativa ou desativa alertas toast na TUI.
 
 ## Limitações — lê isto antes de confiar no plugin
 

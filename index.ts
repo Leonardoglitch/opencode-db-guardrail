@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { appendFile, mkdir } from "node:fs/promises"
+import { appendFile, mkdir, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 
 /**
  * opencode-db-guardrail
@@ -11,54 +11,68 @@ import { join } from "node:path"
  * do opencode-codex-guardrails (github.com/Yulimfish/opencode-codex-guardrails):
  * segmentação de comandos encadeados, expansão de shell-wrappers /
  * interpretadores one-liner, e um log de auditoria persistente —
- * mas reescrito de raiz e focado especificamente em bases de dados.
- *
- * Instalação (ver README.md para detalhes):
- *   opencode.json -> { "plugin": ["opencode-db-guardrail"] }
- *
- * LIMITAÇÃO CONHECIDA: hooks de plugin do opencode não interceptam,
- * atualmente, chamadas de ferramentas feitas por sub-agentes lançados
- * via `task` (opencode issue #5894). Este plugin protege chamadas do
- * agente principal; não confies nele como única linha de defesa —
- * combina com permissões corretas ao nível da própria base de dados.
- * Ver a secção "Limitações" do README.
- *
- * Ajusta a lista RULES consoante as ferramentas que usas
- * (psql, mysql, mongosh, prisma, rails, docker, etc.).
+ * com suporte a configuração externa personalizável por projeto (guardrail.config.json).
  */
 
-type Severity = "critical" | "risky"
+export type Severity = "critical" | "risky"
 
-interface Rule {
+export interface Rule {
+  id?: string | undefined
   pattern: RegExp
   label: string
   severity: Severity
 }
 
+export interface CustomRuleConfig {
+  id?: string
+  pattern: string
+  flags?: string
+  label: string
+  severity?: Severity
+}
+
+export interface GuardrailConfig {
+  log?: {
+    enabled?: boolean
+    path?: string
+  }
+  toast?: {
+    enabled?: boolean
+  }
+  rules?: {
+    disableDefaults?: string[]
+    custom?: CustomRuleConfig[]
+  }
+  wrappers?: {
+    additionalPatterns?: string[]
+  }
+}
+
 // "critical"  -> operações praticamente irreversíveis (perda total de dados)
 // "risky"     -> operações potencialmente perigosas mas por vezes legítimas
-const RULES: Rule[] = [
-  { pattern: /\bdrop\s+database\b/i, label: "DROP DATABASE", severity: "critical" },
-  { pattern: /\bdrop\s+schema\b/i, label: "DROP SCHEMA", severity: "critical" },
-  { pattern: /\btruncate\s+table\b/i, label: "TRUNCATE TABLE", severity: "critical" },
-  { pattern: /mongosh?[^\n]*dropDatabase/i, label: "MongoDB dropDatabase", severity: "critical" },
-  { pattern: /mysqladmin\s+.*drop\b/i, label: "mysqladmin drop", severity: "critical" },
+export const DEFAULT_RULES: Rule[] = [
+  { id: "drop-database", pattern: /\bdrop\s+database\b/i, label: "DROP DATABASE", severity: "critical" },
+  { id: "drop-schema", pattern: /\bdrop\s+schema\b/i, label: "DROP SCHEMA", severity: "critical" },
+  { id: "truncate-table", pattern: /\btruncate\s+table\b/i, label: "TRUNCATE TABLE", severity: "critical" },
+  { id: "mongo-drop-database", pattern: /mongosh?[^\n]*dropDatabase/i, label: "MongoDB dropDatabase", severity: "critical" },
+  { id: "mysqladmin-drop", pattern: /mysqladmin\s+.*drop\b/i, label: "mysqladmin drop", severity: "critical" },
   {
+    id: "docker-db-volume-rm",
     pattern: /docker\s+.*rm\s+.*-v\b.*(postgres|mysql|mongo)/i,
     label: "remoção de volume de DB via docker",
     severity: "critical",
   },
-  { pattern: /\bdelete\s+from\s+\S+\s*;?\s*$/im, label: "DELETE sem WHERE", severity: "risky" },
-  { pattern: /\bupdate\s+\S+\s+set\b(?!.*\bwhere\b)/is, label: "UPDATE sem WHERE", severity: "risky" },
-  { pattern: /prisma\s+migrate\s+reset/i, label: "prisma migrate reset", severity: "risky" },
-  { pattern: /rails\s+db:drop/i, label: "rails db:drop", severity: "risky" },
+  { id: "delete-without-where", pattern: /\bdelete\s+from\s+\S+\s*;?\s*$/im, label: "DELETE sem WHERE", severity: "risky" },
+  { id: "update-without-where", pattern: /\bupdate\s+\S+\s+set\b(?!.*\bwhere\b)/is, label: "UPDATE sem WHERE", severity: "risky" },
+  { id: "prisma-migrate-reset", pattern: /prisma\s+migrate\s+reset/i, label: "prisma migrate reset", severity: "risky" },
+  { id: "rails-db-drop", pattern: /rails\s+db:drop/i, label: "rails db:drop", severity: "risky" },
 ]
 
 // Wrappers de shell cujo payload interno precisa de ser extraído e reanalisado.
-const SHELL_WRAPPERS: RegExp[] = [/^\s*(?:sudo\s+)?(?:bash|sh|zsh)\s+-c\s+["'](.+)["']\s*$/is]
+export const DEFAULT_SHELL_WRAPPERS: RegExp[] = [/^\s*(?:sudo\s+)?(?:bash|sh|zsh)\s+-c\s+["'](.+)["']\s*$/is]
 
 // Interpretadores one-liner cujo código inline também precisa de ser analisado.
-const INTERPRETER_ONE_LINERS: RegExp[] = [
+export const DEFAULT_INTERPRETER_ONE_LINERS: RegExp[] = [
   /^\s*python[23]?\s+-c\s+["'](.+)["']\s*$/is,
   /^\s*node\s+-e\s+["'](.+)["']\s*$/is,
   /^\s*ruby\s+-e\s+["'](.+)["']\s*$/is,
@@ -66,69 +80,178 @@ const INTERPRETER_ONE_LINERS: RegExp[] = [
   /^\s*php\s+-r\s+["'](.+)["']\s*$/is,
 ]
 
-const AUDIT_LOG_PATH = join(homedir(), ".config", "opencode", "memory", "db-guardrail.log")
+export const DEFAULT_AUDIT_LOG_PATH = join(homedir(), ".config", "opencode", "memory", "db-guardrail.log")
+
+function resolveHomePath(filepath: string): string {
+  if (filepath.startsWith("~")) {
+    return join(homedir(), filepath.slice(1))
+  }
+  return filepath
+}
+
+export interface ResolvedGuardrailOptions {
+  rules: Rule[]
+  wrappers: RegExp[]
+  auditLogPath: string
+  logEnabled: boolean
+  toastEnabled: boolean
+}
+
+/**
+ * Lê e carrega o arquivo guardrail.config.json, se existir.
+ * Caso haja falha de parse ou leitura, retorna null ou lança aviso dependendo do contexto.
+ */
+export async function loadConfigFile(configPath: string): Promise<GuardrailConfig | null> {
+  try {
+    const raw = await readFile(configPath, "utf8")
+    return JSON.parse(raw) as GuardrailConfig
+  } catch (err: any) {
+    if (err?.code === "ENOENT") {
+      return null
+    }
+    throw err
+  }
+}
+
+/**
+ * Monta as opções ativas combinando os valores padrão e a configuração externa.
+ */
+export function buildResolvedOptions(config?: GuardrailConfig | null): ResolvedGuardrailOptions {
+  const disabledList = new Set((config?.rules?.disableDefaults ?? []).map((d) => d.trim().toLowerCase()))
+
+  // Filtra regras padrão não desativadas (permite desativar por label ou id)
+  const activeRules: Rule[] = DEFAULT_RULES.filter((rule) => {
+    const labelMatch = disabledList.has(rule.label.toLowerCase())
+    const idMatch = rule.id ? disabledList.has(rule.id.toLowerCase()) : false
+    return !labelMatch && !idMatch
+  })
+
+  // Adiciona regras customizadas
+  if (config?.rules?.custom && Array.isArray(config.rules.custom)) {
+    for (const item of config.rules.custom) {
+      if (!item.pattern || !item.label) continue
+      try {
+        const regex = new RegExp(item.pattern, item.flags ?? "i")
+        activeRules.push({
+          id: item.id,
+          pattern: regex,
+          label: item.label,
+          severity: item.severity === "risky" ? "risky" : "critical",
+        })
+      } catch {
+        // Ignora regras com regex malformatado
+      }
+    }
+  }
+
+  // Monta lista de wrappers
+  const wrappers: RegExp[] = [...DEFAULT_SHELL_WRAPPERS, ...DEFAULT_INTERPRETER_ONE_LINERS]
+  if (config?.wrappers?.additionalPatterns && Array.isArray(config.wrappers.additionalPatterns)) {
+    for (const patternStr of config.wrappers.additionalPatterns) {
+      try {
+        wrappers.push(new RegExp(patternStr, "is"))
+      } catch {
+        // Ignora padrões de wrapper inválidos
+      }
+    }
+  }
+
+  const rawLogPath = config?.log?.path ?? DEFAULT_AUDIT_LOG_PATH
+  const auditLogPath = resolveHomePath(rawLogPath)
+
+  return {
+    rules: activeRules,
+    wrappers,
+    auditLogPath,
+    logEnabled: config?.log?.enabled ?? true,
+    toastEnabled: config?.toast?.enabled ?? true,
+  }
+}
 
 /**
  * Divide um comando pelos operadores de encadeamento de shell (&&, ||, ;, |)
  * para que cada segmento seja avaliado de forma independente.
- *
- * NOTA: isto é uma divisão simples baseada em regex, não um parser de shell
- * completo — não lida perfeitamente com aspas aninhadas ou escaping complexo.
- * É uma primeira linha de defesa, não uma sandbox.
  */
-function splitSegments(command: string): string[] {
+export function splitSegments(command: string): string[] {
   return command
     .split(/(?:&&|\|\||;|\|)/)
     .map((s) => s.trim())
     .filter(Boolean)
 }
 
-function unwrapPayload(segment: string): string[] {
+export function unwrapPayload(segment: string, wrappers: RegExp[]): string[] {
   const found: string[] = []
-  for (const wrapper of [...SHELL_WRAPPERS, ...INTERPRETER_ONE_LINERS]) {
+  for (const wrapper of wrappers) {
     const match = segment.match(wrapper)
     if (match?.[1]) found.push(match[1])
   }
   return found
 }
 
-function matchRule(segment: string): Rule | null {
-  for (const rule of RULES) {
+export function matchRule(segment: string, rules: Rule[]): Rule | null {
+  for (const rule of rules) {
     if (rule.pattern.test(segment)) return rule
   }
   return null
 }
 
 /**
- * Analisa recursivamente um comando: primeiro os seus segmentos
- * encadeados, depois — para cada segmento — o payload de qualquer
- * shell-wrapper ou interpretador one-liner que o envolva.
+ * Analisa recursivamente um comando com as regras e wrappers fornecidos.
  */
-function scanCommand(command: string, depth = 0): { rule: Rule; matchedText: string } | null {
+export function scanCommand(
+  command: string,
+  rules: Rule[],
+  wrappers: RegExp[],
+  depth = 0
+): { rule: Rule; matchedText: string } | null {
   if (depth > 4) return null // evita recursão sem fim em payloads maliciosamente aninhados
 
   for (const segment of splitSegments(command)) {
-    const direct = matchRule(segment)
+    const direct = matchRule(segment, rules)
     if (direct) return { rule: direct, matchedText: segment }
 
-    for (const inner of unwrapPayload(segment)) {
-      const nested = scanCommand(inner, depth + 1)
+    for (const inner of unwrapPayload(segment, wrappers)) {
+      const nested = scanCommand(inner, rules, wrappers, depth + 1)
       if (nested) return nested
     }
   }
   return null
 }
 
-async function appendAuditLog(line: string) {
+export async function appendAuditLog(auditPath: string, line: string): Promise<void> {
   try {
-    await mkdir(join(homedir(), ".config", "opencode", "memory"), { recursive: true })
-    await appendFile(AUDIT_LOG_PATH, line + "\n", "utf8")
+    const parentDir = resolve(auditPath, "..")
+    await mkdir(parentDir, { recursive: true })
+    await appendFile(auditPath, line + "\n", "utf8")
   } catch {
     // Falha a escrever o log não deve impedir o bloqueio em si.
   }
 }
 
+export interface DbProtectionPluginOptions {
+  configFile?: string
+  config?: GuardrailConfig
+}
+
 export const DbProtection: Plugin = async ({ client }) => {
+  // Procura guardrail.config.json no workspace ou cwd
+  const configFilePath = resolve(process.cwd(), "guardrail.config.json")
+  let userConfig: GuardrailConfig | null = null
+
+  try {
+    userConfig = await loadConfigFile(configFilePath)
+  } catch (err: any) {
+    await client.app.log({
+      body: {
+        service: "db-protection",
+        level: "warn",
+        message: `Aviso: Erro ao carregar ${configFilePath}: ${err.message}. Usando regras padrão.`,
+      },
+    })
+  }
+
+  const options = buildResolvedOptions(userConfig)
+
   return {
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
@@ -136,7 +259,7 @@ export const DbProtection: Plugin = async ({ client }) => {
       const command: string = output.args?.command ?? ""
       if (!command) return
 
-      const hit = scanCommand(command)
+      const hit = scanCommand(command, options.rules, options.wrappers)
       if (!hit) return
 
       const { rule, matchedText } = hit
@@ -145,25 +268,29 @@ export const DbProtection: Plugin = async ({ client }) => {
         `[${timestamp}] [${rule.severity.toUpperCase()}] ${rule.label} :: ` +
         `comando original: ${command} :: segmento detetado: ${matchedText}`
 
-      await appendAuditLog(logLine)
+      if (options.logEnabled) {
+        await appendAuditLog(options.auditLogPath, logLine)
+      }
+
       await client.app.log({
         body: { service: "db-protection", level: "warn", message: logLine },
       })
 
-      // Notificação visível na TUI, além do log e do erro que bloqueia o comando.
-      try {
-        await client.tui.showToast({
-          body: {
-            title:
-              rule.severity === "critical"
-                ? " Comando de base de dados bloqueado"
-                : " Comando de risco bloqueado",
-            message: `${rule.label}\n${matchedText}`,
-            variant: rule.severity === "critical" ? "error" : "warning",
-          },
-        })
-      } catch {
-        // Sem TUI ligada (ex: modo headless) — segue só com o log e o erro abaixo.
+      if (options.toastEnabled) {
+        try {
+          await client.tui.showToast({
+            body: {
+              title:
+                rule.severity === "critical"
+                  ? " Comando de base de dados bloqueado"
+                  : " Comando de risco bloqueado",
+              message: `${rule.label}\n${matchedText}`,
+              variant: rule.severity === "critical" ? "error" : "warning",
+            },
+          })
+        } catch {
+          // Sem TUI ligada (ex: modo headless) — segue só com o log e o erro abaixo.
+        }
       }
 
       throw new Error(

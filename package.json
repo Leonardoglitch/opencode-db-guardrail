@@ -4,8 +4,13 @@
   "description": "opencode plugin that blocks destructive database commands (DROP DATABASE, TRUNCATE TABLE, DELETE/UPDATE without WHERE, etc.) before they run, with shell-wrapper unwrapping, command-chain segmentation, toast alerts and an audit log.",
   "type": "module",
   "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node dist/test/runtests.js"
+  },
   "files": [
     "index.ts",
+    "guardrail.config.json.example",
     "README.md",
     "LICENSE"
   ],

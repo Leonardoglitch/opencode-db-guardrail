@@ -1,4 +1,6 @@
-import { DbProtection } from "../index.js";
+import { DbProtection, buildResolvedOptions, scanCommand, loadConfigFile } from "../index.js";
+import { writeFile, unlink } from "node:fs/promises";
+import { resolve } from "node:path";
 
 // Mock do client do Opencode (apenas as partes usadas pelo plugin)
 const mockClient = {
@@ -17,7 +19,7 @@ const mockClient = {
 async function runTests() {
   console.log("=== INICIANDO TESTE MANUAL DO OPENCODE-DB-GUARDRAIL ===\n");
 
-  // Obtém o plugin (factory assíncrona)
+  // Obtém o plugin padrão (factory assíncrona)
   const pluginFactory = await DbProtection({
     client: mockClient,
   } as unknown as Parameters<typeof DbProtection>[0]);
@@ -25,8 +27,8 @@ async function runTests() {
     "tool.execute.before": (input: any, output: any) => Promise<void>;
   };
 
-  // Casos de teste: [descrição, comando, deveBloquear (esperado)]
-  const testCases: Array<[string, string, boolean]> = [
+  // Casos de teste padrão: [descrição, comando, deveBloquear (esperado)]
+  const defaultTestCases: Array<[string, string, boolean]> = [
     // Perigosos (devem ser bloqueados)
     ["DROP DATABASE direto", "DROP DATABASE producao;", true],
     ["UPDATE sem WHERE", "UPDATE contas SET saldo = 0;", true],
@@ -52,8 +54,8 @@ async function runTests() {
   let passed = 0;
   let failed = 0;
 
-  for (const [desc, command, shouldBlock] of testCases) {
-    console.log(`\n--- [TESTE] ${desc} ---`);
+  for (const [desc, command, shouldBlock] of defaultTestCases) {
+    console.log(`\n--- [TESTE PADRÃO] ${desc} ---`);
     console.log(`Comando: "${command}"`);
 
     const input = { tool: "bash" };
@@ -81,7 +83,131 @@ async function runTests() {
     }
   }
 
-  console.log("\n=== RESUMO ===");
+  console.log("\n=== TESTANDO CONFIGURAÇÃO EXTERNA (guardrail.config.json) ===");
+
+  // Teste 1: Regras customizadas e desativação de regras padrão via buildResolvedOptions
+  const customConfig = {
+    rules: {
+      disableDefaults: ["rails db:drop", "prisma-migrate-reset"],
+      custom: [
+        {
+          pattern: "\\bdrop\\s+table\\b",
+          flags: "i",
+          label: "DROP TABLE",
+          severity: "critical" as const
+        }
+      ]
+    },
+    wrappers: {
+      additionalPatterns: [
+        "^\\s*pipenv\\s+run\\s+python\\s+-c\\s+[\"'](.+)[\"']\\s*$"
+      ]
+    }
+  };
+
+  const resolved = buildResolvedOptions(customConfig);
+
+  // 1.1: rails db:drop deve ser permitido agora
+  const railsHit = scanCommand("rails db:drop", resolved.rules, resolved.wrappers);
+  if (!railsHit) {
+    console.log(" OK: 'rails db:drop' foi desativado com sucesso.");
+    passed++;
+  } else {
+    console.log(" FALHA: 'rails db:drop' deveria ter sido ignorado.");
+    failed++;
+  }
+
+  // 1.2: prisma migrate reset deve ser permitido agora (desativado por id)
+  const prismaHit = scanCommand("prisma migrate reset", resolved.rules, resolved.wrappers);
+  if (!prismaHit) {
+    console.log(" OK: 'prisma-migrate-reset' (por id) foi desativado com sucesso.");
+    passed++;
+  } else {
+    console.log(" FALHA: 'prisma migrate reset' deveria ter sido ignorado.");
+    failed++;
+  }
+
+  // 1.3: DROP TABLE customizado deve ser bloqueado agora
+  const dropTableHit = scanCommand("DROP TABLE usuarios;", resolved.rules, resolved.wrappers);
+  if (dropTableHit && dropTableHit.rule.label === "DROP TABLE") {
+    console.log(" OK: Regra customizada 'DROP TABLE' bloqueada com sucesso.");
+    passed++;
+  } else {
+    console.log(" FALHA: Regra customizada 'DROP TABLE' não foi bloqueada.");
+    failed++;
+  }
+
+  // 1.4: Wrapper customizado (pipenv run python -c) deve desencapsular e bloquear
+  const wrapperHit = scanCommand("pipenv run python -c \"DROP DATABASE teste;\"", resolved.rules, resolved.wrappers);
+  if (wrapperHit && wrapperHit.rule.label === "DROP DATABASE") {
+    console.log(" OK: Wrapper customizado 'pipenv' desencapsulado e bloqueado com sucesso.");
+    passed++;
+  } else {
+    console.log(" FALHA: Wrapper customizado não detectou payload interno.");
+    failed++;
+  }
+
+  // Teste 2: Criação e carregamento real de guardrail.config.json no diretório
+  const tempConfigPath = resolve(process.cwd(), "guardrail.config.json");
+  console.log("\n--- [TESTE INTEGRAÇÃO] Carregamento de guardrail.config.json físico ---");
+
+  try {
+    await writeFile(
+      tempConfigPath,
+      JSON.stringify({
+        rules: {
+          disableDefaults: ["rails db:drop"],
+          custom: [{ pattern: "\\bdrop\\s+view\\b", label: "DROP VIEW" }]
+        }
+      }),
+      "utf8"
+    );
+
+    const loadedPluginFactory = await DbProtection({
+      client: mockClient,
+    } as unknown as Parameters<typeof DbProtection>[0]);
+    const loadedPlugin = loadedPluginFactory as unknown as {
+      "tool.execute.before": (input: any, output: any) => Promise<void>;
+    };
+
+    // rails db:drop agora deve ser permitido
+    let railsBlocked = false;
+    try {
+      await loadedPlugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "rails db:drop" } });
+    } catch {
+      railsBlocked = true;
+    }
+
+    if (!railsBlocked) {
+      console.log(" OK: Plugin carregou guardrail.config.json físico e desativou rails db:drop.");
+      passed++;
+    } else {
+      console.log(" FALHA: Plugin não respeitou o guardrail.config.json físico.");
+      failed++;
+    }
+
+    // DROP VIEW agora deve ser bloqueado
+    let viewBlocked = false;
+    try {
+      await loadedPlugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "DROP VIEW relatorio;" } });
+    } catch {
+      viewBlocked = true;
+    }
+
+    if (viewBlocked) {
+      console.log(" OK: Plugin bloqueou regra customizada 'DROP VIEW' carregada do arquivo físico.");
+      passed++;
+    } else {
+      console.log(" FALHA: Plugin não bloqueou regra customizada carregada do arquivo físico.");
+      failed++;
+    }
+  } finally {
+    try {
+      await unlink(tempConfigPath);
+    } catch {}
+  }
+
+  console.log("\n=== RESUMO FINAL ===");
   console.log(` Passou: ${passed} |  Falhou: ${failed}`);
   
   if (failed > 0) {
