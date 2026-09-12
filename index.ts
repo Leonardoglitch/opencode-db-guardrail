@@ -66,6 +66,7 @@ export interface GuardrailConfig {
 // "critical"  -> operações praticamente irreversíveis (perda total de dados)
 // "risky"     -> operações potencialmente perigosas mas por vezes legítimas
 export const DEFAULT_RULES: Rule[] = [
+  // Padrões genéricos / ANSI SQL / PostgreSQL / MariaDB / MySQL
   { id: "drop-database", pattern: /\bdrop\s+database\b/i, label: "DROP DATABASE", severity: "critical" },
   { id: "drop-schema", pattern: /\bdrop\s+schema\b/i, label: "DROP SCHEMA", severity: "critical" },
   { id: "truncate-table", pattern: /\btruncate\s+table\b/i, label: "TRUNCATE TABLE", severity: "critical" },
@@ -73,7 +74,7 @@ export const DEFAULT_RULES: Rule[] = [
   { id: "mysqladmin-drop", pattern: /mysqladmin\s+.*drop\b/i, label: "mysqladmin drop", severity: "critical" },
   {
     id: "docker-db-volume-rm",
-    pattern: /docker\s+.*rm\s+.*-v\b.*(postgres|mysql|mongo)/i,
+    pattern: /docker\s+.*rm\s+.*-v\b.*(postgres|mysql|mariadb|mongo|redis|cassandra|mssql)/i,
     label: "remoção de volume de DB via docker",
     severity: "critical",
   },
@@ -81,6 +82,30 @@ export const DEFAULT_RULES: Rule[] = [
   { id: "update-without-where", pattern: /\bupdate\s+\S+\s+set\b(?!.*\bwhere\b)/is, label: "UPDATE sem WHERE", severity: "risky" },
   { id: "prisma-migrate-reset", pattern: /prisma\s+migrate\s+reset/i, label: "prisma migrate reset", severity: "risky" },
   { id: "rails-db-drop", pattern: /rails\s+db:drop/i, label: "rails db:drop", severity: "risky" },
+
+  // SQL Server
+  { id: "sqlserver-detach-db", pattern: /\b(?:exec\s+)?sp_detach_db\b/i, label: "SQL Server sp_detach_db", severity: "critical" },
+  { id: "sqlserver-backup-log-truncate", pattern: /\bbackup\s+log\b.*\bwith\s+truncate_only\b/is, label: "SQL Server BACKUP LOG WITH TRUNCATE_ONLY", severity: "critical" },
+  { id: "sqlserver-single-user-rollback", pattern: /\balter\s+database\b.*\bset\s+single_user\b.*\brollback\s+immediate\b/is, label: "SQL Server SET SINGLE_USER ROLLBACK IMMEDIATE", severity: "risky" },
+
+  // Oracle
+  { id: "oracle-drop-tablespace", pattern: /\bdrop\s+tablespace\b.*\bincluding\s+contents\b/is, label: "Oracle DROP TABLESPACE INCLUDING CONTENTS", severity: "critical" },
+  { id: "oracle-drop-user-cascade", pattern: /\bdrop\s+user\b.*\bcascade\b/is, label: "Oracle DROP USER CASCADE", severity: "critical" },
+  { id: "oracle-purge-recyclebin", pattern: /\bpurge\s+(?:recyclebin|dba_recyclebin)\b/i, label: "Oracle PURGE RECYCLEBIN", severity: "critical" },
+
+  // Redis
+  { id: "redis-flush", pattern: /(?:\bredis-cli\b.*)?\b(?:flushall|flushdb)\b/i, label: "Redis FLUSHALL / FLUSHDB", severity: "critical" },
+  { id: "redis-config-set-dir", pattern: /\bredis-cli\b.*config\s+set\s+(?:dir|dbfilename)\b/i, label: "Redis CONFIG SET dir/dbfilename", severity: "critical" },
+  { id: "redis-shutdown-nosave", pattern: /\bredis-cli\b.*shutdown\s+nosave\b/i, label: "Redis SHUTDOWN NOSAVE", severity: "critical" },
+  { id: "redis-debug-segfault", pattern: /\bredis-cli\b.*debug\s+segfault\b/i, label: "Redis DEBUG SEGFAULT", severity: "critical" },
+
+  // Cassandra
+  { id: "cassandra-drop-keyspace", pattern: /\bdrop\s+keyspace\b/i, label: "Cassandra DROP KEYSPACE", severity: "critical" },
+  { id: "cassandra-truncate", pattern: /\bcqlsh\b.*\btruncate\b/is, label: "Cassandra TRUNCATE via cqlsh", severity: "critical" },
+
+  // SQLite
+  { id: "sqlite3-backup-destruct", pattern: /\bsqlite3\s+.*\.backup\b/i, label: "SQLite .backup sob rescrita", severity: "risky" },
+  { id: "sqlite3-drop-table", pattern: /\bsqlite3\s+.*(?:drop\s+table|delete\s+from\s+\S+\s*;)/i, label: "SQLite DROP TABLE / DELETE sem WHERE via sqlite3 CLI", severity: "critical" },
 ]
 
 // Wrappers de shell cujo payload interno precisa de ser extraído e reanalisado.

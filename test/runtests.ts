@@ -406,6 +406,41 @@ async function runTests() {
     failed++;
   }
 
+  // Teste 5: Regras expandidas para mais bancos (SQL Server, Oracle, Redis, Cassandra, SQLite, MariaDB)
+  console.log("\n=== TESTANDO REGRAS EXPANDIDAS PARA MAIS BANCOS ===");
+  const multiDbCases: Array<[string, string, string]> = [
+    // [descrição, comando, labelEsperado]
+    ["SQL Server sp_detach_db", "EXEC sp_detach_db 'VendasDB'", "SQL Server sp_detach_db"],
+    ["SQL Server BACKUP LOG WITH TRUNCATE_ONLY", "BACKUP LOG Clientes WITH TRUNCATE_ONLY", "SQL Server BACKUP LOG WITH TRUNCATE_ONLY"],
+    ["SQL Server SET SINGLE_USER ROLLBACK IMMEDIATE", "ALTER DATABASE ERP SET SINGLE_USER WITH ROLLBACK IMMEDIATE", "SQL Server SET SINGLE_USER ROLLBACK IMMEDIATE"],
+    ["Oracle DROP TABLESPACE INCLUDING CONTENTS", "DROP TABLESPACE tbs_dados INCLUDING CONTENTS AND DATAFILES;", "Oracle DROP TABLESPACE INCLUDING CONTENTS"],
+    ["Oracle DROP USER CASCADE", "DROP USER usuario_sistema CASCADE;", "Oracle DROP USER CASCADE"],
+    ["Oracle PURGE RECYCLEBIN", "PURGE RECYCLEBIN;", "Oracle PURGE RECYCLEBIN"],
+    ["Redis FLUSHALL direto", "redis-cli FLUSHALL", "Redis FLUSHALL / FLUSHDB"],
+    ["Redis FLUSHDB", "FLUSHDB", "Redis FLUSHALL / FLUSHDB"],
+    ["Redis CONFIG SET dir (vetor RCE)", "redis-cli -h 127.0.0.1 CONFIG SET dir /var/spool/cron", "Redis CONFIG SET dir/dbfilename"],
+    ["Redis SHUTDOWN NOSAVE", "redis-cli shutdown nosave", "Redis SHUTDOWN NOSAVE"],
+    ["Redis DEBUG SEGFAULT", "redis-cli debug segfault", "Redis DEBUG SEGFAULT"],
+    ["Cassandra DROP KEYSPACE", "DROP KEYSPACE estoque;", "Cassandra DROP KEYSPACE"],
+    ["Cassandra TRUNCATE via cqlsh", "cqlsh -e \"TRUNCATE tabela_logs;\"", "Cassandra TRUNCATE via cqlsh"],
+    ["SQLite DROP TABLE via CLI", "sqlite3 app.db \"DROP TABLE logs;\"", "SQLite DROP TABLE / DELETE sem WHERE via sqlite3 CLI"],
+    ["SQLite .backup sobrescrevendo", "sqlite3 prod.db \".backup backup.db\"", "SQLite .backup sob rescrita"],
+    ["Docker volume rm com redis/mariadb", "docker volume rm -v prod_redis_data", "remoção de volume de DB via docker"],
+  ];
+
+  const defaultResolved = buildResolvedOptions(null);
+
+  for (const [desc, cmd, expectedLabel] of multiDbCases) {
+    const hit = scanCommand(cmd, defaultResolved.rules, defaultResolved.wrappers);
+    if (hit && hit.rule.label === expectedLabel) {
+      console.log(` OK: [${desc}] bloqueado corretamente com label "${expectedLabel}".`);
+      passed++;
+    } else {
+      console.log(` FALHA: [${desc}] não foi bloqueado conforme esperado. Hit: ${hit?.rule.label}`);
+      failed++;
+    }
+  }
+
   console.log("\n=== RESUMO FINAL ===");
   console.log(` Passou: ${passed} |  Falhou: ${failed}`);
   

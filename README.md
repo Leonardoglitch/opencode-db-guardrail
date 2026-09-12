@@ -13,13 +13,28 @@ focado especificamente em operações de bases de dados.
 
 | Camada | Comportamento |
 |---|---|
-| **Regras críticas** | Bloqueia sempre: `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE TABLE`, `mongosh ... dropDatabase()`, `mysqladmin drop`, remoção de volumes docker de bases de dados. |
-| **Regras de risco** | Bloqueia: `DELETE FROM` sem `WHERE`, `UPDATE ... SET` sem `WHERE`, `prisma migrate reset`, `rails db:drop`. |
+| **Regras críticas** | Bloqueia operações irreversíveis em múltiplos motores: `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE TABLE`, `mongosh ... dropDatabase()`, `mysqladmin drop`, remoção de volumes docker de bases de dados, `sp_detach_db`, `BACKUP LOG ... WITH TRUNCATE_ONLY`, `DROP TABLESPACE ... INCLUDING CONTENTS`, `DROP USER ... CASCADE`, `PURGE RECYCLEBIN`, `FLUSHALL`/`FLUSHDB`, `CONFIG SET dir`, `SHUTDOWN NOSAVE`, `DROP KEYSPACE`, etc. |
+| **Regras de risco** | Bloqueia: `DELETE FROM` sem `WHERE`, `UPDATE ... SET` sem `WHERE`, `prisma migrate reset`, `rails db:drop`, `SET SINGLE_USER ROLLBACK IMMEDIATE`, sobrescrita destrutiva de `.backup` no SQLite. |
 | **Segmentação de comandos** | Divide comandos encadeados (`&&`, `\|\|`, `;`, `\|`) e avalia cada parte individualmente. |
 | **Expansão de shell-wrappers** | Deteta `bash -c "…"`, `sh -c "…"`, `sudo bash -c "…"` e reanalisa o conteúdo interno recursivamente. |
 | **Expansão de interpretadores one-liner** | O mesmo para `python -c`, `node -e`, `ruby -e`, `perl -e`, `php -r`. |
+| **Allowlist auditável** | Libera comandos específicos com motivo registrado (`[ALLOWLIST]`) para rotinas legítimas e compliance. |
 | **Notificação visível** | Mostra um toast (vermelho para crítico, laranja para risco) na TUI do opencode. |
 | **Log de auditoria** | Regista cada bloqueio em `~/.config/opencode/memory/db-guardrail.log`, com timestamp, severidade, comando original e segmento detetado. |
+
+## Bancos de Dados e Operações Cobertas
+
+| Banco / Motor | Operações Protegidas | ID da Regra Padrão |
+|---|---|---|
+| **PostgreSQL / MySQL / MariaDB** | `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE TABLE`, `mysqladmin drop`, `DELETE`/`UPDATE` sem `WHERE` | `drop-database`, `drop-schema`, `truncate-table`, `mysqladmin-drop`, `delete-without-where`, `update-without-where` |
+| **MongoDB** | `db.dropDatabase()` via `mongosh` ou scripts inline | `mongo-drop-database` |
+| **SQL Server (MSSQL)** | `sp_detach_db`, `BACKUP LOG WITH TRUNCATE_ONLY`, `SET SINGLE_USER WITH ROLLBACK IMMEDIATE` | `sqlserver-detach-db`, `sqlserver-backup-log-truncate`, `sqlserver-single-user-rollback` |
+| **Oracle** | `DROP TABLESPACE ... INCLUDING CONTENTS`, `DROP USER ... CASCADE`, `PURGE RECYCLEBIN` | `oracle-drop-tablespace`, `oracle-drop-user-cascade`, `oracle-purge-recyclebin` |
+| **Redis** | `FLUSHALL`, `FLUSHDB`, `CONFIG SET dir/dbfilename` (vetor de RCE), `SHUTDOWN NOSAVE`, `DEBUG SEGFAULT` | `redis-flush`, `redis-config-set-dir`, `redis-shutdown-nosave`, `redis-debug-segfault` |
+| **Cassandra** | `DROP KEYSPACE`, `TRUNCATE` via `cqlsh` | `cassandra-drop-keyspace`, `cassandra-truncate` |
+| **SQLite** | `DROP TABLE`, `DELETE` sem `WHERE` via CLI sqlite3, sobrescrita destrutiva via `.backup` | `sqlite3-drop-table`, `sqlite3-backup-destruct` |
+| **Docker** | Remoção forçada com volume (`docker rm -v`) de containers Postgres, MySQL, MariaDB, Mongo, Redis, MSSQL ou Cassandra | `docker-db-volume-rm` |
+| **Frameworks (Prisma / Rails)** | `prisma migrate reset`, `rails db:drop` | `prisma-migrate-reset`, `rails-db-drop` |
 
 ## Instalação
 
